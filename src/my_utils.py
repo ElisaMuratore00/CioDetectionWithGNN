@@ -13,6 +13,7 @@ import torch
 import mlflow
 from collections import Counter
 
+import os
 
 from node2vec import Node2Vec
 from torch_geometric.utils import from_networkx
@@ -37,6 +38,27 @@ def set_seed(seed):
 def setup_env(device_id, dataset_name, hyper_parameters):
     # seed, num_splits = hyper_parameters['seed'], hyper_parameters['num_splits']
     device = torch.device("cuda" if torch.cuda.is_available() and device_id != "-1" else "cpu")
+    
+    # Creating folder to host run-specific files
+    base_dir = pathlib.Path.cwd().parent.parent / 'data'
+    my_run_id = uuid.uuid4()
+    interim_data_dir = base_dir / 'interim_gnn' / f"{my_run_id}"
+    interim_data_dir.mkdir(exist_ok=True, parents=True)
+
+    # Import dataset
+    processed_data_dir = base_dir / 'raw_information_operation' 
+
+    data_dir = processed_data_dir / dataset_name
+
+    # Enter in the inner folder
+    data_folder_code = [f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))][0]
+    data_dir = data_dir / data_folder_code
+
+    return device, base_dir, interim_data_dir, data_dir
+
+def setup_env_mminici(device_id, dataset_name, hyper_parameters):
+    # seed, num_splits = hyper_parameters['seed'], hyper_parameters['num_splits']
+    device = torch.device("cuda" if torch.cuda.is_available() and device_id != "-1" else "cpu")
     # Creating folder to host run-specific files
     base_dir = pathlib.Path.cwd().parent
     my_run_id = uuid.uuid4()
@@ -46,7 +68,6 @@ def setup_env(device_id, dataset_name, hyper_parameters):
     processed_data_dir = base_dir / 'data' / 'processed'
     data_dir = processed_data_dir / dataset_name
     return device, base_dir, interim_data_dir, data_dir
-
 
 def move_data_to_device(data, device):
     data['labels'] = torch.FloatTensor(data['labels']).to(device)
