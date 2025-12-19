@@ -35,24 +35,27 @@ def set_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def setup_env(device_id, dataset_name, hyper_parameters):
+def setup_env(device_id, dataset_name, hyper_parameters, data_path_prefix: str | None = None):
     # seed, num_splits = hyper_parameters['seed'], hyper_parameters['num_splits']
     device = torch.device("cuda" if torch.cuda.is_available() and device_id != "-1" else "cpu")
     
     # Creating folder to host run-specific files
-    base_dir = pathlib.Path.cwd().parent.parent / 'data'
+    if data_path_prefix is None:
+        base_dir = pathlib.Path.cwd().parent.parent / 'data'
+    else:
+        base_dir = pathlib.Path(data_path_prefix)
+
     my_run_id = uuid.uuid4()
-    interim_data_dir = base_dir / 'interim_gnn' / f"{my_run_id}"
+    interim_data_dir = base_dir.parent / 'method_iohunter' / f"{my_run_id}"
     interim_data_dir.mkdir(exist_ok=True, parents=True)
 
     # Import dataset
-    processed_data_dir = base_dir / 'raw_information_operation' 
-
+    processed_data_dir = base_dir / 'processed_iohunter_operation' 
     data_dir = processed_data_dir / dataset_name
 
     # Enter in the inner folder
-    data_folder_code = [f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))][0]
-    data_dir = data_dir / data_folder_code
+    #data_folder_code = [f for f in os.listdir(data_dir) if os.path.isdir(os.path.join(data_dir, f))][0]
+    #data_dir = data_dir / data_folder_code
 
     return device, base_dir, interim_data_dir, data_dir
 
@@ -285,12 +288,12 @@ def save_metrics(logger, interim_data_dir, split_type):
         avg_val, std_val = logger.get_metric_stats(metric_name)
         mlflow.log_metric(metric_name + '_avg', avg_val)
         mlflow.log_metric(metric_name + '_std', std_val)
-        np.save(file=interim_data_dir / f'val_{metric_name}' if split_type == 'VAL' else metric_name,
-                arr=np.array(logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(
-            interim_data_dir / f'val_{metric_name}.npy' if split_type == 'VAL' else f'{metric_name}.npy')
-        print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
 
+        npfilename = f'val_{metric_name}.npy' if split_type == 'VAL' else f'{metric_name}.npy'
+        np.save(file=interim_data_dir / npfilename,
+                arr=np.array(logger.test_metrics_dict[metric_name]))
+        mlflow.log_artifact(interim_data_dir / npfilename)
+        print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
 
 def create_data_loader_for_hgnn(datasets, graph_list, node_features, node_labels, data_dir, device, batch_size=None,
                                 sanity_check=False):

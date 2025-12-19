@@ -58,7 +58,7 @@ def create_model(model_hyperparams):
                               num_structural_features=model_hyperparams['num_structural_features'])
 
 
-def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, device_id):
+def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, device_id, data_path_prefix: str | None = None):
     # Start experiment
     if model_hyperparams is None:
         model_hyperparams = DEFAULT_MODEL_HYPERPARAMETERS
@@ -70,8 +70,10 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     set_seed(hyper_params['seed'])
     # set device
     os.environ['CUDA_VISIBLE_DEVICES'] = device_id
-    device, base_dir, interim_data_dir, data_dir = setup_env(device_id, dataset_name, hyper_params)
-    print(data_dir)
+    device, base_dir, interim_data_dir, data_dir = setup_env(device_id, dataset_name, hyper_params, data_path_prefix=data_path_prefix)
+    print('SETUP - data_dir', data_dir)
+    print('SETUP - base_dir', base_dir)
+    print('SETUP - device', device)
     # Create data loader for signed datasets
     datasets = create_data_loader(data_dir, hyper_params['tsim_th'],
                                   hyper_params['train_perc'], hyper_params['undersampling'])
@@ -244,6 +246,7 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Run GNN model")
     parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='russia')
+    parser.add_argument('-data_path_prefix', '--data_path_prefix', type=str, help='Data path prefix', default=None)
     parser.add_argument('-seed', '--seed', type=int, help='Random seed', default=12121995)
     parser.add_argument('-train_perc', '--train', type=float, help='Training percentage', default=.6)
     parser.add_argument('-val_perc', '--val', type=float, help='Validation percentage', default=.2)
@@ -289,4 +292,4 @@ if __name__ == '__main__':
                              }
     # model hyperparameters
     model_hyperparameters = {'gnn_type': args.gnn, 'latent_dim': args.latent, 'dropout': args.dropout}
-    main(args.dataset, train_hyperparameters, model_hyperparameters, hyper_parameters, args.device)
+    main(args.dataset, train_hyperparameters, model_hyperparameters, hyper_parameters, args.device, args.data_path_prefix)
