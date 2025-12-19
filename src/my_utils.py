@@ -21,7 +21,6 @@ from torch_geometric.data import HeteroData
 from torch_geometric.transforms.add_positional_encoding import AddRandomWalkPE
 from sklearn.decomposition import TruncatedSVD
 
-
 def set_seed(seed):
     if seed is None:
         seed = 12121995
@@ -46,7 +45,7 @@ def setup_env(device_id, dataset_name, hyper_parameters, data_path_prefix: str |
         base_dir = pathlib.Path(data_path_prefix)
 
     my_run_id = uuid.uuid4()
-    interim_data_dir = base_dir.parent / 'method_iohunter' / f"{my_run_id}"
+    interim_data_dir = base_dir.parent / 'methods_informationoperations_ALL' / 'iohunter_on_processed_iohunter' / f"{my_run_id}"
     interim_data_dir.mkdir(exist_ok=True, parents=True)
 
     # Import dataset
@@ -286,13 +285,13 @@ def save_metrics(logger, interim_data_dir, split_type):
     print(f'{split_type} set: ')
     for metric_name in logger.test_metrics_dict:
         avg_val, std_val = logger.get_metric_stats(metric_name)
-        mlflow.log_metric(metric_name + '_avg', avg_val)
-        mlflow.log_metric(metric_name + '_std', std_val)
+        #mlflow.log_metric(interim_data_dir / metric_name + '_avg', avg_val)
+        #mlflow.log_metric(interim_data_dir / metric_name + '_std', std_val)
 
         npfilename = f'val_{metric_name}.npy' if split_type == 'VAL' else f'{metric_name}.npy'
         np.save(file=interim_data_dir / npfilename,
                 arr=np.array(logger.test_metrics_dict[metric_name]))
-        mlflow.log_artifact(interim_data_dir / npfilename)
+        #mlflow.log_artifact(interim_data_dir / npfilename)
         print(f'[{split_type}] {metric_name}: {avg_val}+-{std_val}')
 
 def create_data_loader_for_hgnn(datasets, graph_list, node_features, node_labels, data_dir, device, batch_size=None,

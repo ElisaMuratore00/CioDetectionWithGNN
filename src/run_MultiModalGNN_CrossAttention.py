@@ -6,6 +6,7 @@ import torch
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import wandb
 
 from models import GNN
 from my_utils import set_seed, setup_env, move_data_to_device, update_best_model_snapshot \
@@ -20,9 +21,8 @@ DEFAULT_HYPERPARAMETERS = {'train_perc': .6,
                            'num_splits': 5,
                            'aggr_type': 'mean'}
 DEFAULT_TRAIN_HYPERPARAMETERS = {'input_embed': 'positional', 'epochs': 1000, 'learning_rate': 1e-3,
-                                 'early_stopping_limit': 10, 'check_loss_freq': 5}
+                                 'early_stopping_limit': 10, 'check_loss_freq': 2}
 DEFAULT_MODEL_HYPERPARAMETERS = {'gnn_type': 'gcn', 'latent_dim': 32, 'dropout': 0.2}
-
 
 def create_model(model_hyperparams):
     class GNN_CrossAttention(torch.nn.Module):
@@ -58,7 +58,7 @@ def create_model(model_hyperparams):
                               num_structural_features=model_hyperparams['num_structural_features'])
 
 
-def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, device_id, data_path_prefix: str | None = None):
+def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, device_id, data_path_prefix: str | None = None, wandb_entity: str = '', ):
     # Start experiment
     if model_hyperparams is None:
         model_hyperparams = DEFAULT_MODEL_HYPERPARAMETERS
@@ -74,6 +74,17 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     print('SETUP - data_dir', data_dir)
     print('SETUP - base_dir', base_dir)
     print('SETUP - device', device)
+
+    # Setup wandb logging
+    project_name = f"iohunter_{dataset_name}_{model_hyperparams['gnn_type']}"
+    config = {
+        **hyper_params,
+        "train_hyperparams": train_hyperparams,
+        "model_hyperparams": model_hyperparams,
+        "device_id": device_id,
+        "data_path_prefix": data_path_prefix
+    }
+
     # Create data loader for signed datasets
     datasets = create_data_loader(data_dir, hyper_params['tsim_th'],
                                   hyper_params['train_perc'], hyper_params['undersampling'])
@@ -137,6 +148,14 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # Get training hyperparameters
     num_epochs = train_hyperparams['num_epochs']
     metric_to_optimize = train_hyperparams['metric_to_optimize']
+
+    run = wandb.init(
+        entity=wandb_entity, 
+        project=project_name, 
+        id=interim_data_dir.name, 
+        dir =str(interim_data_dir)+'/wandb',
+        config=config)
+
     for run_id in tqdm(range(hyper_params['num_splits']), 'Splits training'):
         BEST_VAL_METRIC = -np.inf
         best_model_path = interim_data_dir / f'model{run_id}.pth'
@@ -154,10 +173,16 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
             optimizer.zero_grad()
             pred = model(node_features, struct_node_features, edge_index).flatten()
             loss = loss_fn(pred[datasets['splits'][run_id]['train']],
-                           datasets['labels'][datasets['splits'][run_id]['train']])
+                        datasets['labels'][datasets['splits'][run_id]['train']])
             loss.backward()
             optimizer.step()
             train_logger.train_update(run_id, 'supervised', loss.item())
+
+            run.log({
+                'train_loss/split_'+str(run_id): loss.item(),
+                'train_num_epochs/split_'+str(run_id): epoch,
+            })
+
             if epoch % train_hyperparams["check_loss_freq"] == 0:
                 # Validation step
                 model.eval()
@@ -165,6 +190,19 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
                     pred = model(node_features, struct_node_features, edge_index).detach().cpu().numpy().flatten()
                     val_metrics = eval_pred(numpy_labels, pred > 0.5, datasets['splits'][run_id]['val'])
                     train_logger.val_update(run_id, val_metrics[train_hyperparams["metric_to_optimize"]])
+
+                    # wandb validation loss
+                    loss_val = loss_fn(
+                        torch.tensor(pred[datasets['splits'][run_id]['val']]).to('cpu'),
+                        datasets['labels'][datasets['splits'][run_id]['val']].to('cpu')
+                    )
+
+                    run.log({
+                        'val_loss/split_'+str(run_id): loss_val.item(),
+                        'val_num_epochs/split_'+str(run_id): epoch,
+                        **{f'val_metrics/{metric}/split_'+str(run_id): val_metrics[metric] for metric in val_metrics},
+                    })
+ 
                     if val_metrics[train_hyperparams["metric_to_optimize"]] > BEST_VAL_METRIC:
                         BEST_VAL_METRIC = val_metrics[train_hyperparams["metric_to_optimize"]]
                         torch.save(model.state_dict(), best_model_path)
@@ -175,6 +213,9 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
                         f'Epoch {epoch}/{num_epochs} train_loss: {loss.item()} -- val_{metric_to_optimize}: {val_metrics[metric_to_optimize]}')
             else:
                 train_logger.val_update(run_id, 0.0)
+
+
+        ## Evaluation phase
         model.load_state_dict(torch.load(best_model_path))
         model.eval()
         with torch.no_grad():
@@ -189,20 +230,20 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
             test_logger.update(metric_name, run_id, test_metrics[metric_name])
         # Evaluate perfomance on test set (only coRT nodes)
         test_metrics_coRT = eval_pred(numpy_labels, pred > 0.5,
-                                      np.logical_and(datasets['splits'][run_id]['test'], coRT_mask),
-                                      prob_pred=pred)
+                                    np.logical_and(datasets['splits'][run_id]['test'], coRT_mask),
+                                    prob_pred=pred)
         for metric_name in test_metrics_coRT:
             test_logger_coRT.update(metric_name, run_id, test_metrics_coRT[metric_name])
         # Evaluate perfomance on test set (only coURL nodes)
         test_metrics_coURL = eval_pred(numpy_labels, pred > 0.5,
-                                       np.logical_and(datasets['splits'][run_id]['test'], coURL_mask),
-                                       prob_pred=pred)
+                                    np.logical_and(datasets['splits'][run_id]['test'], coURL_mask),
+                                    prob_pred=pred)
         for metric_name in test_metrics_coURL:
             test_logger_coURL.update(metric_name, run_id, test_metrics_coURL[metric_name])
         # Evaluate perfomance on test set (only hashSeq nodes)
         test_metrics_hashSeq = eval_pred(numpy_labels, pred > 0.5,
-                                         np.logical_and(datasets['splits'][run_id]['test'], hashSeq_mask),
-                                         prob_pred=pred)
+                                        np.logical_and(datasets['splits'][run_id]['test'], hashSeq_mask),
+                                        prob_pred=pred)
         for metric_name in test_metrics_hashSeq:
             test_logger_hashSeq.update(metric_name, run_id, test_metrics_hashSeq[metric_name])
         # Evaluate perfomance on test set (only fastRT nodes)
@@ -213,22 +254,39 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
             test_logger_fastRT.update(metric_name, run_id, test_metrics_fastRT[metric_name])
         # Evaluate perfomance on test set (only tweetSim nodes)
         test_metrics_tweetSim = eval_pred(numpy_labels, pred > 0.5,
-                                          np.logical_and(datasets['splits'][run_id]['test'], tweetSim_mask),
-                                          prob_pred=pred)
+                                        np.logical_and(datasets['splits'][run_id]['test'], tweetSim_mask),
+                                        prob_pred=pred)
         for metric_name in test_metrics_tweetSim:
             test_logger_tweetSim.update(metric_name, run_id, test_metrics_tweetSim[metric_name])
 
-    for split_num in tqdm(range(hyper_params['num_splits']), 'Splits post-training'):
-        mlflow.log_artifact(interim_data_dir / f'model{split_num}.pth')  # store best model
+        # Wandb
+        for key, value in {
+            'final_val_metrics': val_metrics,
+            'final_test_metrics': test_metrics,
+            'final_test_metrics_coRT': test_metrics_coRT,
+            'final_test_metrics_coURL': test_metrics_coURL,
+            'final_test_metrics_hashSeq': test_metrics_hashSeq,
+            'final_test_metrics_fastRT': test_metrics_fastRT,
+            'final_test_metrics_tweetSim': test_metrics_tweetSim
+        }.items():
+            for metric_name in value:
+                run.summary[key + '/' + metric_name + '/split_' + str(run_id)] = value[metric_name]
+
         fig = plot_losses(
-            train_values=[train_logger.train_loss_dict[split_num]['supervised']],
-            val_values=[train_logger.val_metrics_dict[split_num]],
-            train_labels=['supervised loss'],
-            val_labels=[f'val {metric_to_optimize}'])
-        fig.savefig(interim_data_dir / f'train_and_val_loss_curves{split_num}.png', dpi=800)
-        fig.savefig(interim_data_dir / f'train_and_val_loss_curves{split_num}.pdf')
-        mlflow.log_artifact(interim_data_dir / f'train_and_val_loss_curves{split_num}.png')
-        mlflow.log_artifact(interim_data_dir / f'train_and_val_loss_curves{split_num}.pdf')
+            train_values=[train_logger.train_loss_dict[split_num]['supervised']
+                        for split_num in range(hyper_params['num_splits'])],
+            val_values=[train_logger.val_metrics_dict[split_num]
+                        for split_num in range(hyper_params['num_splits'])],
+            train_labels=[f'train split_{split_num}'
+                        for split_num in range(hyper_params['num_splits'])],
+            val_labels=[f'val split_{split_num}'
+                        for split_num in range(hyper_params['num_splits'])],
+            metric_to_optimize=metric_to_optimize,
+        )
+        fig.savefig(interim_data_dir / f'train_and_val_loss_curves.png', dpi=800)
+        fig.savefig(interim_data_dir / f'train_and_val_loss_curves.pdf')
+        #mlflow.log_artifact(interim_data_dir / f'train_and_val_loss_curves{split_num}.png')
+        #mlflow.log_artifact(interim_data_dir / f'train_and_val_loss_curves{split_num}.pdf')
 
     # Save metrics
     save_metrics(val_logger, interim_data_dir, 'VAL')
@@ -242,10 +300,13 @@ def main(dataset_name, train_hyperparams, model_hyperparams, hyper_params, devic
     # Save best models
     update_best_model_snapshot(data_dir, metric_to_optimize, test_logger, hyper_params['num_splits'], interim_data_dir)
 
+    run.finish()
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser(description="Run GNN model")
     parser.add_argument('-dataset_name', '--dataset', type=str, help='Dataset', default='russia')
+    parser.add_argument('-wandb_entity', '--wandb_entity', type=str, help='Wandb entity name', default='')
     parser.add_argument('-data_path_prefix', '--data_path_prefix', type=str, help='Data path prefix', default=None)
     parser.add_argument('-seed', '--seed', type=int, help='Random seed', default=12121995)
     parser.add_argument('-train_perc', '--train', type=float, help='Training percentage', default=.6)
@@ -292,4 +353,4 @@ if __name__ == '__main__':
                              }
     # model hyperparameters
     model_hyperparameters = {'gnn_type': args.gnn, 'latent_dim': args.latent, 'dropout': args.dropout}
-    main(args.dataset, train_hyperparameters, model_hyperparameters, hyper_parameters, args.device, args.data_path_prefix)
+    main(args.dataset, train_hyperparameters, model_hyperparameters, hyper_parameters, args.device, args.data_path_prefix, args.wandb_entity)
